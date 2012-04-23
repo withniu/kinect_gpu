@@ -1,0 +1,20 @@
+<package>
+  <description brief="kinect_gpu">
+
+     kinect_gpu
+
+  </description>
+  <author>withniu</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/kinect_gpu</url>
+  <depend package="opencv2"/>
+  <depend package="roscpp"/>
+  <depend package="sensor_msgs"/>
+  <depend package="std_msgs"/>
+  <depend package="image_transport"/>
+  <depend package="cv_bridge"/>
+  <depend package="pcl_ros"/>
+</package>
+
+

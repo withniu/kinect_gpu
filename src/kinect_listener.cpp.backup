@@ -1,0 +1,283 @@
+#include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <message_filters/synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <sensor_msgs/image_encodings.h>
+#include <cv_bridge/cv_bridge.h>
+
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/features2d/features2d.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+
+#include <pcl/ros/conversions.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/visualization/cloud_viewer.h>
+#include <pcl/visualization/pcl_visualizer.h>
+
+#include <boost/thread/thread.hpp>
+#include <pcl/common/common_headers.h>
+#include <pcl/common/common_headers.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/visualization/pcl_visualizer.h>
+#include <pcl/console/parse.h>
+
+
+#define USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER 1
+#define DRAW 0
+
+#if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
+#  include <image_transport/subscriber_filter.h>
+#else
+#  include <sensor_msgs/Image.h>
+#  include <message_filters/subscriber.h>
+#endif
+
+const float fx = 525.0;
+const float fy = 525.0;
+const float cx = 319.5;
+const float cy = 239.5;
+
+
+
+class KinectListener {
+public:
+	KinectListener() :
+		viewer_ ("Simple Viewer"),
+		basic_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>),
+		point_cloud_ptr (new pcl::PointCloud<pcl::PointXYZRGB>),
+		viewer (new pcl::visualization::PCLVisualizer ("3D Viewer")),
+		it_(nh_),
+#if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
+	    	rgb_image_sub_( it_, "/camera/rgb/image_color", 1 ),
+		depth_image_sub_( it_, "/camera/depth/image", 1 ),
+#else
+		rgb_image_sub_( nh_, "image/rgb", 1 ),
+		depth_image_sub_( nh_, "image/depth", 1 ),
+#endif
+		sync( MySyncPolicy( 10 ), rgb_image_sub_, depth_image_sub_ )
+		{
+			
+			index_ = 0;
+			time_ = ros::Time::now();
+			img1_ = cv::Mat::ones(480,640,CV_8UC3);
+			
+			uint8_t r(255), g(15), b(15);
+			for (float z(-1.0); z <= 1.0; z += 0.05)
+			{
+				for (float angle(0.0); angle <= 360.0; angle += 5.0)
+				{
+					pcl::PointXYZ basic_point;
+					basic_point.x = 0.5 * cosf (pcl::deg2rad(angle));
+					basic_point.y = sinf (pcl::deg2rad(angle));
+					basic_point.z = z;
+//					basic_cloud_ptr->points.push_back(basic_point);
+
+					pcl::PointXYZRGB point;
+					point.x = basic_point.x;
+					point.y = basic_point.y;
+					point.z = basic_point.z;
+					uint32_t rgb = (static_cast<uint32_t>(r) << 16 |
+					      static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(b));
+					point.rgb = *reinterpret_cast<float*>(&rgb);
+					point_cloud_ptr->points.push_back (point);
+				}
+				if (z < 0.0)
+				{
+					r -= 12;
+					g += 12;
+				}
+				else
+				{
+					g -= 12;
+					b += 12;
+				}
+			}
+			basic_cloud_ptr->width = (int) basic_cloud_ptr->points.size ();
+			basic_cloud_ptr->height = 1;
+			point_cloud_ptr->width = (int) point_cloud_ptr->points.size ();
+			point_cloud_ptr->height = 1;
+			
+  			viewer->setBackgroundColor (0, 0, 0);
+//  			viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "sample cloud");
+  			viewer->addCoordinateSystem (1.0);
+  			viewer->initCameraParameters (); 
+
+
+#if DRAW
+			cv::namedWindow("RGB");			
+			cv::namedWindow("Depth");
+			cv::namedWindow("Feature");
+			cv::namedWindow("Matches");				
+#endif
+			sync.registerCallback( boost::bind( &KinectListener::callback, this, _1, _2 ) );
+			
+		}
+
+	void callback(const sensor_msgs::ImageConstPtr& rgb_msg,
+				  const sensor_msgs::ImageConstPtr& depth_msg) {
+		ros::Time begin,end;
+		begin = ros::Time::now();
+
+		cv_bridge::CvImagePtr cv_rgb_ptr;	// cv_bridge for rgb image
+		cv_bridge::CvImagePtr cv_depth_ptr;	// cv_bridge for depth image
+
+		try
+		{
+			cv_rgb_ptr = cv_bridge::toCvCopy(rgb_msg, sensor_msgs::image_encodings::BGR8);
+			cv_depth_ptr = cv_bridge::toCvCopy(depth_msg);		
+		}
+		catch (cv_bridge::Exception& e)
+		{
+			ROS_ERROR("cv_bridge exception: %s", e.what());
+			return;
+		}
+		cv::SurfFeatureDetector detector(400);	
+		cv::BruteForceMatcher<cv::L2<float> > matcher;
+		cv::vector<cv::DMatch> matches;
+		cv::SurfDescriptorExtractor extractor;
+		cv::Mat img_matches;
+		if (index_ % 2) {
+			img1_ = cv_rgb_ptr->image;
+			detector.detect(img1_, keypoints1_);
+			extractor.compute(img1_, keypoints1_, descriptors1_);
+			matcher.match(descriptors2_, descriptors1_, matches);
+#if DRAW
+			cv::drawKeypoints(img1_,keypoints1_,img1_features_);
+			cv::imshow("Feature", img1_features_);
+			cv::drawMatches(img2_, keypoints2_, img1_, keypoints1_, matches, img_matches);
+#endif
+		} else {
+			img2_ = cv_rgb_ptr->image;
+			detector.detect(img2_, keypoints2_);
+			extractor.compute(img2_, keypoints2_, descriptors2_);
+			matcher.match(descriptors1_, descriptors2_, matches);
+#if DRAW			
+			cv::drawKeypoints(img2_,keypoints2_,img2_features_);
+			cv::imshow("Feature", img2_features_);			
+			cv::drawMatches(img1_, keypoints1_, img2_, keypoints2_, matches, img_matches);
+#endif		
+		}
+//		if (index_ % 2) {
+//			
+//		} else {
+//
+//		}
+		
+		// Calculate 3D features
+		basic_cloud_ptr->clear();		
+		keypoints3d1_ = cv::vector<cv::Point3f>(matches.size());
+		for (unsigned int i = 0;i < matches.size();i++) {							
+			unsigned int x = keypoints1_[matches[i].queryIdx].pt.x;
+			unsigned int y = keypoints1_[matches[i].queryIdx].pt.y;
+			float z = cv_depth_ptr->image.at<float>(x,y);
+			keypoints3d1_[i].x = 1.0 / fx * (x - cx) * z;
+			keypoints3d1_[i].y = 1.0 / fy * (y - cy) * z;
+			keypoints3d1_[i].z = z;	
+			pcl::PointXYZ basic_point;
+			basic_point.x = 1.0 / fx * (x - cx) * z;
+			basic_point.y = 1.0 / fy * (y - cy) * z;
+			basic_point.z = z;
+			basic_cloud_ptr->points.push_back(basic_point);		
+		}
+		basic_cloud_ptr->width = (int) basic_cloud_ptr->points.size ();
+		basic_cloud_ptr->height = 1;
+		char cloud_id[20];
+		sprintf(cloud_id,"sample cloud%d",index_);
+		viewer->addPointCloud<pcl::PointXYZ> (basic_cloud_ptr, cloud_id);
+    		viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloud_id);
+  		viewer->addCoordinateSystem (1.0);
+		viewer->spinOnce (10); 		
+		viewer_.showCloud(basic_cloud_ptr);
+
+//		pcl::PointCloud<pcl::PointXYZ> cloud;
+// 		cloud.push_back (pcl::PointXYZ (rand (), rand (), rand ())); 
+// 		cloud.push_back (pcl::PointXYZ (rand (), rand (), rand ())); 
+// 		cloud.push_back (pcl::PointXYZ (rand (), rand (), rand ())); 
+// 		cloud.push_back (pcl::PointXYZ (rand (), rand (), rand ()));
+		
+
+
+		 	
+			
+		  	
+			
+
+
+		//pcl::visualization::CloudViewer viewer("Simple Cloud Viewer");
+//		viewer.showCloud(cloud);
+
+//    		boost::this_thread::sleep (boost::posix_time::microseconds (100000));
+
+#if DRAW
+		cv::imshow("Matches", img_matches);
+		cv::imshow("RGB", cv_rgb_ptr->image);
+		cv::imshow("Depth", cv_depth_ptr->image);
+		cv::waitKey(3);
+#endif
+		index_++;
+		
+//		ros::Duration(1.0).sleep();
+
+		end = ros::Time::now();
+		ros::Time time_now = ros::Time::now();
+		ROS_INFO("%fs, %.2fHz",end.toSec() - begin.toSec(),1 / (time_now.toSec() - time_.toSec()));
+		time_ = time_now;
+  }
+
+public:
+	pcl::visualization::CloudViewer viewer_;
+
+
+private:
+
+
+
+	ros::NodeHandle nh_;
+	image_transport::ImageTransport it_;
+	
+	cv::Mat img1_,img2_;
+	cv::Mat img1_features_,img2_features_;
+	cv::vector<cv::KeyPoint> keypoints1_, keypoints2_;
+	cv::Mat descriptors1_, descriptors2_;
+	cv::vector<cv::Point3f> keypoints3d1_,keypoints3d2_;
+	
+	int index_;		// Count for callback to switch ping-pong
+	ros::Time time_;	// Timing for callback
+	
+	pcl::PointCloud<pcl::PointXYZ>::Ptr basic_cloud_ptr;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr point_cloud_ptr; 
+	boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer; 
+
+#if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
+  typedef image_transport::SubscriberFilter ImageSubscriber;
+#else
+  typedef message_filters::Subscriber< sensor_msgs::Image > ImageSubscriber;
+#endif
+
+  ImageSubscriber rgb_image_sub_;
+  ImageSubscriber depth_image_sub_;
+
+  typedef message_filters::sync_policies::ApproximateTime<
+    sensor_msgs::Image, sensor_msgs::Image
+  > MySyncPolicy;
+
+  message_filters::Synchronizer< MySyncPolicy > sync;
+};
+
+
+
+
+int main(int argc, char** argv) {
+  ros::init( argc, argv, "my_node" );
+  KinectListener mc;
+
+  while( ros::ok() ){
+    ros::spin();
+  }
+
+  return EXIT_SUCCESS;
+}
+ 
