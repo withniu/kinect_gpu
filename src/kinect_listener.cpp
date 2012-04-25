@@ -29,7 +29,7 @@
 #include <pcl/registration/correspondence_rejection_sample_consensus.h>
 
 #define USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER 1
-#define DRAW 0
+#define DRAW 1
 #define GPU 1
 
 
@@ -206,12 +206,12 @@ public:
 				cv::drawKeypoints(img1_,keypoints1_,img1_features_);
 				cv::imshow("Feature", img1_features_);
 				cv::waitKey(3);
-//				drawMatches(img1_, keypoints1_, img2_, keypoints2_, matches, img_matches);
+				drawMatches(img1_, keypoints1_, img2_, keypoints2_, matches, img_matches);
 			 } else {
 				cv::drawKeypoints(img2_,keypoints2_,img2_features_);
 				cv::imshow("Feature", img2_features_);
 				cv::waitKey(3);
-//				drawMatches(img2_, keypoints2_, img1_, keypoints1_, matches, img_matches);
+				drawMatches(img2_, keypoints2_, img1_, keypoints1_, matches, img_matches);
 			}
 //			char filename_gpu[40];
 //			sprintf(filename_gpu,"gpu_kinect_rgb_matches_%03d.jpg",index_);
@@ -349,7 +349,7 @@ public:
 //		std::cout << R << std::endl;
 //		std::cout << T << std::endl;
 
-		if (correspondences_inlier_.size() > kThreshold) {		
+/*		if (correspondences_inlier_.size() > kThreshold) {		
 		
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr msg(new pcl::PointCloud<pcl::PointXYZRGB>);
 			msg->header.frame_id = "/openni_camera";
@@ -384,7 +384,7 @@ public:
 			pub_.publish (msg);
 
 		}
-
+*/
 		
 //		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
 //		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
@@ -394,7 +394,7 @@ public:
 			
 
 #if DRAW
-//		cv::imshow("Matches", img_matches);
+		cv::imshow("Matches", img_matches);
 //		cv::imshow("RGB", cv_rgb_ptr->image);
 //		cv::imshow("Depth", cv_depth_ptr->image);
 		cv::waitKey(3);
