@@ -1,44 +1,33 @@
+// ROS
 #include <ros/ros.h>
 #include <image_transport/image_transport.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <sensor_msgs/image_encodings.h>
 #include <cv_bridge/cv_bridge.h>
+#include <image_transport/subscriber_filter.h>
 
+// OpenCV
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-#include <opencv2/gpu/gpu.hpp>        // GPU structures and methods
+#include <opencv2/gpu/gpu.hpp>        
 
-#include <pcl/visualization/cloud_viewer.h>
-#include <pcl/visualization/pcl_visualizer.h>
-
+// PCL
 #include <boost/thread/thread.hpp>
-#include <pcl/common/common_headers.h>
+#include <pcl_ros/point_cloud.h>
 #include <pcl/common/common_headers.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/io/pcd_io.h>
-#include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/console/parse.h>
-
 #include <pcl/correspondence.h>
-#include <pcl_ros/point_cloud.h>
 #include <pcl/point_types.h>
-
 #include <pcl/registration/correspondence_rejection_sample_consensus.h>
 
-#define USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER 1
 #define DRAW 0
 #define GPU 1
 
-
-#if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
-#  include <image_transport/subscriber_filter.h>
-#else
-#  include <sensor_msgs/Image.h>
-#  include <message_filters/subscriber.h>
-#endif
 
 const float fx = 525.0;
 const float fy = 525.0;
@@ -46,7 +35,7 @@ const float cx = 319.5;
 const float cy = 239.5;
 
 const int kThreshold = 100;
-const int kSample = 2;
+const int kSample = 5;
 
 class KinectListener {
 // Members
@@ -69,9 +58,8 @@ private:
 	cv::Mat img1_,img2_;
 	cv::Mat img1_depth_,img2_depth_;
 	cv::Mat img1_features_,img2_features_;
-	cv::vector<cv::KeyPoint> keypoints1_, keypoints2_;
 	cv::Mat descriptors1_, descriptors2_;
-	cv::vector<cv::Point3f> keypoints3d1_,keypoints3d2_;
+	cv::vector<cv::KeyPoint> keypoints1_, keypoints2_;
 	
 	
 #if GPU	
@@ -82,11 +70,8 @@ private:
 #endif
 
 
-#if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
-  typedef image_transport::SubscriberFilter ImageSubscriber;
-#else
-  typedef message_filters::Subscriber< sensor_msgs::Image > ImageSubscriber;
-#endif
+
+  	typedef image_transport::SubscriberFilter ImageSubscriber;
 	ImageSubscriber rgb_image_sub_;
 	ImageSubscriber depth_image_sub_;
 	typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> MySyncPolicy;
@@ -95,75 +80,66 @@ private:
 // Methods
 public:
 	KinectListener() :	// Constructor
-		feature_cloud_ptr1_ (new pcl::PointCloud<pcl::PointXYZ>),
-		feature_cloud_ptr2_ (new pcl::PointCloud<pcl::PointXYZ>),		
-		it_(nh_),
-#if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
-	    	rgb_image_sub_( it_, "/camera/rgb/image_color", 1 ),
-		depth_image_sub_( it_, "/camera/depth/image", 1 ),
-#else
-		rgb_image_sub_( nh_, "image/rgb", 1 ),
-		depth_image_sub_( nh_, "image/depth", 1 ),
-#endif
-		sync( MySyncPolicy( 10 ), rgb_image_sub_, depth_image_sub_ )
-		{
-			ros::Time begin = ros::Time::now();
-			pub_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZRGB> > ("/keypoints3d", 1);
-			index_ = 0;
-			time_ = ros::Time::now();
-			img1_ = cv::Mat::ones(480,640,CV_8UC3);
-			img1_depth_ = cv::Mat::ones(480,640,CV_32FC1);
-			img2_ = cv::Mat::ones(480,640,CV_8UC3);
-			img2_depth_ = cv::Mat::ones(480,640,CV_32FC1);
+			feature_cloud_ptr1_ (new pcl::PointCloud<pcl::PointXYZ>),
+			feature_cloud_ptr2_ (new pcl::PointCloud<pcl::PointXYZ>),		
+			it_(nh_),
+		    	rgb_image_sub_( it_, "/camera/rgb/image_color", 1 ),
+			depth_image_sub_( it_, "/camera/depth/image", 1 ),
+			sync( MySyncPolicy( 10 ), rgb_image_sub_, depth_image_sub_ )
+	{
+		pub_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZRGB> > ("/keypoints3d", 1);
+		index_ = 0;
+		time_ = ros::Time::now();
 
-			cloud1_.header.frame_id = "/openni_camera";
-			cloud1_.height = 480;
-			cloud1_.width = 640;
-			cloud2_.header.frame_id = "/openni_camera";
-			cloud2_.height = 480;
-			cloud2_.width = 640;
-			
-			feature_cloud_ptr1_->height = 1;
-			feature_cloud_ptr2_->height = 1;
+		img1_ = cv::Mat::ones(480,640,CV_8UC3);
+		img1_depth_ = cv::Mat::ones(480,640,CV_32FC1);
+		img2_ = cv::Mat::ones(480,640,CV_8UC3);
+		img2_depth_ = cv::Mat::ones(480,640,CV_32FC1);
 
+		cloud1_.header.frame_id = "/openni_camera";
+		cloud1_.height = 480;
+		cloud1_.width = 640;
+		cloud2_.header.frame_id = "/openni_camera";
+		cloud2_.height = 480;
+		cloud2_.width = 640;
+		
+		feature_cloud_ptr1_->height = 1;
+		feature_cloud_ptr2_->height = 1;
 
-			correspondences_.reserve(1500);
-			R_ << 1, 0, 0,
-			      0, 1, 0,
-			      0, 0, 1;
-			T_ = Eigen::Vector3f(0,0,0);
+		correspondences_.reserve(1500);
+		R_ << 1, 0, 0,
+		      0, 1, 0,
+		      0, 0, 1;
+		T_ = Eigen::Vector3f(0,0,0);
 
 #if GPU
-			cv::Mat mask_host = cv::Mat::ones(480,640,CV_8UC1);
-			mask_dev_.upload(mask_host);
-			cv::Mat src_host(480,640,CV_8UC3);
-			cv::gpu::GpuMat dst_device, src_device;
-			src_device.upload(src_host);
-			cv::gpu::cvtColor(src_device,dst_device,CV_BGR2GRAY);
-			cv::Mat result_host;
-			dst_device.download(result_host);
-			ROS_INFO("GPU initialization done...");
+		cv::Mat mask_host = cv::Mat::ones(480,640,CV_8UC1);
+		mask_dev_.upload(mask_host);
+		cv::Mat src_host(480,640,CV_8UC3);
+		cv::gpu::GpuMat dst_device, src_device;
+		src_device.upload(src_host);
+		cv::gpu::cvtColor(src_device,dst_device,CV_BGR2GRAY);
+		cv::Mat result_host;
+		dst_device.download(result_host);
+		ROS_INFO("GPU initialization done...");
 #endif
-			ros::Time end = ros::Time::now();
-			ROS_INFO("Takes %fs.",end.toSec() - begin.toSec());
+		ros::Time end = ros::Time::now();
+		ROS_INFO("Takes %fs.",end.toSec() - time_.toSec());
 #if DRAW
-			cv::namedWindow("RGB");			
-			cv::namedWindow("Depth");
-			cv::namedWindow("Feature");
-			cv::namedWindow("Matches");				
+		cv::namedWindow("RGB");			
+		cv::namedWindow("Depth");
+		cv::namedWindow("Feature");
+		cv::namedWindow("Matches");				
 #endif
-			sync.registerCallback( boost::bind( &KinectListener::callback, this, _1, _2 ) );
-			
-		}
+		sync.registerCallback( boost::bind( &KinectListener::callback, this, _1, _2 ) );
+	}
 
-	void callback(const sensor_msgs::ImageConstPtr& rgb_msg,
-				  const sensor_msgs::ImageConstPtr& depth_msg) {
-		ros::Time begin,end,end1,end2,end3;
+	void callback(const sensor_msgs::ImageConstPtr& rgb_msg, const sensor_msgs::ImageConstPtr& depth_msg) {
+		ros::Time begin,end,end1,end2,end3,end4;
 		begin = ros::Time::now();
 		// Convert image msg to cv::Mat
 		cv_bridge::CvImagePtr cv_rgb_ptr;	// cv_bridge for rgb image
 		cv_bridge::CvImagePtr cv_depth_ptr;	// cv_bridge for depth image
-
 
 		try
 		{
@@ -193,6 +169,9 @@ public:
 			src_dev.upload(cv_rgb_ptr->image);
 			cv::gpu::cvtColor(src_dev,img_dev_,CV_BGR2GRAY);
 			cv::gpu::BruteForceMatcher_GPU<cv::L2<float> > matcher;
+			
+			end2 = ros::Time::now();
+
 			// SURF GPU	
 			if (index_ % 2) {
 				surf_(img_dev_,mask_dev_,keypoints1_dev_, descriptors1_dev_);
@@ -204,7 +183,15 @@ public:
 				matcher.match(descriptors1_dev_,descriptors2_dev_,matches);
 			}
 							
+			end3 = ros::Time::now();			
+
+			if (index_ % 2) {
+				surf_.downloadKeypoints(keypoints1_dev_, keypoints1_);
+			} else {
+				surf_.downloadKeypoints(keypoints2_dev_, keypoints2_);
+			}
 			
+			end4 = ros::Time::now();
 #if DRAW
 			
 			if (!(index_ % 2)){
@@ -218,9 +205,6 @@ public:
 				cv::waitKey(3);
 				drawMatches(img2_, keypoints2_, img1_, keypoints1_, matches, img_matches);
 			}
-//			char filename_gpu[40];
-//			sprintf(filename_gpu,"gpu_kinect_rgb_matches_%03d.jpg",index_);
-//		    	cv::imwrite(filename_gpu,img_matches);    
 #endif
 		}
 		catch(const cv::Exception& ex)
@@ -229,7 +213,6 @@ public:
 		}
 
 #else	// CPU version
-
 
 		
 		// SURF	Detection and Matching	
@@ -263,10 +246,8 @@ public:
 		}
 
 #endif
-		end2 = ros::Time::now();
-
-
-		end3 = ros::Time::now();
+		
+		
 		// 3D Features Extraction
 
 		if (index_ % 2) {
@@ -301,12 +282,11 @@ public:
 		}
 
 		if (keypoints1_.size() < 1 || keypoints2_.size() < 1) {
-			std::cout << "keypoints = 0!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << index_ << std::endl;
+			std::cout << "keypoints = 0!" << index_ << std::endl;
 			index_++;
 			return;
 		}
 		correspondences_.clear();		
-//		std::cout << keypoints1_.size() << "#" << keypoints2_.size() << "#" << matches.size() << std::endl;
 		for (unsigned int i = 0;i < (keypoints1_.size() < keypoints2_.size() ? keypoints1_.size() : keypoints2_.size());i++) {		
 			int index_query = matches[i].queryIdx;
 			int index_match = matches[i].trainIdx;
@@ -324,15 +304,11 @@ public:
 				correspondences_.push_back(pcl::Correspondence(index_query,index_match,0));
 		}				
 	
-
-		
-		
 		if (matches.size() == 0) {
-			std::cout << "Matches = 0!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
+			std::cout << "Matches = 0!" << std::endl;
 			index_++;
 			return;
 		}
-//		std::cout << feature_cloud_ptr1_->size() << "#" <<  feature_cloud_ptr2_->size() << std::endl; 
 		// RANSAC Pose Estimation
 		pcl::registration::CorrespondenceRejectorSampleConsensus<pcl::PointXYZ> ransac;
 		if (index_ % 2) {
@@ -350,14 +326,9 @@ public:
 		Eigen::Matrix3f R = tf.topLeftCorner(3,3);
 		Eigen::Vector3f T = tf.topRightCorner(3,1);
 
-//		std::cout << R << std::endl;
-//		std::cout << T << std::endl;
-
 		if (correspondences_inlier_.size() > kThreshold) {		
 			T_ = T_ - R_ * T;
 			R_ = R_ * R.inverse();
-			std::cout << T_ << std::endl;
-			std::cout << R_ << std::endl;
 
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr msg(new pcl::PointCloud<pcl::PointXYZRGB>);
 			msg->header.frame_id = "/openni_camera";
@@ -388,47 +359,45 @@ public:
 
 			Eigen::Vector4f origin;
 			origin << T_,1;
-		//	msg-> sensor_orientation_ = Eigen::Quaternionf(R_);
-		//	msg-> sensor_origin_ = origin;			
+			msg-> sensor_orientation_ = Eigen::Quaternionf(R_);
+			msg-> sensor_origin_ = origin;			
 			pub_.publish (msg);
 
 		}
-
 		
-//		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
-//		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
-		std::cout << tf << std::endl; 
-		std::cout << "#Matches" << matches.size() << "\t#correspondences = " << correspondences_.size() << "\t#inlier = " << correspondences_inlier_.size() << std::endl;
-
-			
-
+		if (correspondences_inlier_.size() > kThreshold)		
+			index_++;
 #if DRAW
 		cv::imshow("Matches", img_matches);
 //		cv::imshow("RGB", cv_rgb_ptr->image);
 //		cv::imshow("Depth", cv_depth_ptr->image);
 		cv::waitKey(3);
 #endif
-		if (correspondences_inlier_.size() > kThreshold)		
-			index_++;
-		
+
+//		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
+//		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
+//		std::cout << tf << std::endl;
+//		std::cout << T_ << std::endl;
+//		std::cout << R_ << std::endl; 
+		std::cout << "#Matches" << matches.size() << "\t#correspondences = " << correspondences_.size() << "\t#inlier = " << correspondences_inlier_.size() << std::endl;
 
 //		ros::Duration(1.0).sleep();
 		ros::Time time_now = ros::Time::now();
 		ROS_INFO("%fs, %.2fHz",time_now.toSec() - begin.toSec(),1 / (time_now.toSec() - time_.toSec()));
-//		ROS_INFO("SURF = %fs, 3D Cloud = %fs",end2.toSec() - end1.toSec(),end3.toSec() - end2.toSec());
-		
+		ROS_INFO("SURF_GPU = %fs(upload%.2f%%,processing%.2f%%,download%.2f%%)", 
+			 end4.toSec() - end1.toSec(),
+			 100 * (end2.toSec() - end1.toSec()) / (end4.toSec() - end1.toSec()),
+			 100 * (end3.toSec() - end2.toSec()) / (end4.toSec() - end1.toSec()),
+			 100 * (end4.toSec() - end3.toSec()) / (end4.toSec() - end1.toSec()));
 		time_ = time_now;
 	}
-
-
-
 };
 
 
 
 
 int main(int argc, char** argv) {
-  ros::init( argc, argv, "my_node" );
+  ros::init( argc, argv, "Kinect_RGBD_SLAM");
   KinectListener mc;
 
   while( ros::ok() ){
