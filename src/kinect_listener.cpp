@@ -30,7 +30,7 @@
 
 #define USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER 1
 #define DRAW 0
-#define GPU 0
+#define GPU 1
 
 
 #if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
@@ -44,6 +44,8 @@ const float fx = 525.0;
 const float fy = 525.0;
 const float cx = 319.5;
 const float cy = 239.5;
+
+const int kThreshold = 100;
 
 class KinectListener {
 // Members
@@ -109,6 +111,8 @@ public:
 			time_ = ros::Time::now();
 			img1_ = cv::Mat::ones(480,640,CV_8UC3);
 			img1_depth_ = cv::Mat::ones(480,640,CV_32FC1);
+			img2_ = cv::Mat::ones(480,640,CV_8UC3);
+			img2_depth_ = cv::Mat::ones(480,640,CV_32FC1);
 
 			cloud1_.header.frame_id = "/openni_camera";
 			cloud1_.height = 480;
@@ -153,7 +157,6 @@ public:
 				  const sensor_msgs::ImageConstPtr& depth_msg) {
 		ros::Time begin,end,end1,end2,end3;
 		begin = ros::Time::now();
-		
 		// Convert image msg to cv::Mat
 		cv_bridge::CvImagePtr cv_rgb_ptr;	// cv_bridge for rgb image
 		cv_bridge::CvImagePtr cv_depth_ptr;	// cv_bridge for depth image
@@ -184,23 +187,19 @@ public:
 			cv::gpu::GpuMat src_dev;
 			src_dev.upload(cv_rgb_ptr->image);
 			cv::gpu::cvtColor(src_dev,img_dev_,CV_BGR2GRAY);
-			
-			// SURF GPU	
-			if (index_ % 2)
-				surf_(img_dev_,mask_dev_,keypoints1_dev_, descriptors1_dev_);
-			else
-				surf_(img_dev_,mask_dev_,keypoints2_dev_, descriptors2_dev_);
-			
-			
 			cv::gpu::BruteForceMatcher_GPU<cv::L2<float> > matcher;
-			
-			if (!(index_ % 2))
+			// SURF GPU	
+			if (index_ % 2) {
+				surf_(img_dev_,mask_dev_,keypoints1_dev_, descriptors1_dev_);
+				surf_.downloadKeypoints(keypoints1_dev_, keypoints1_);
+				matcher.match(descriptors2_dev_,descriptors1_dev_,matches);	
+			} else {
+				surf_(img_dev_,mask_dev_,keypoints2_dev_, descriptors2_dev_);
+				surf_.downloadKeypoints(keypoints2_dev_, keypoints2_);
 				matcher.match(descriptors1_dev_,descriptors2_dev_,matches);
-			else
-				matcher.match(descriptors2_dev_,descriptors1_dev_,matches);
+			}
+							
 			
-			surf_.downloadKeypoints(keypoints1_dev_, keypoints1_);		
-			surf_.downloadKeypoints(keypoints2_dev_, keypoints2_);
 #if DRAW
 			
 			if (!(index_ % 2)){
@@ -264,24 +263,6 @@ public:
 
 		end3 = ros::Time::now();
 		// 3D Features Extraction
-		
-//		pcl::Correspondence correspondence;
-		correspondences_.clear();		
-		for (unsigned int i = 0;i < (keypoints1_.size() < keypoints2_.size() ? keypoints1_.size() : keypoints2_.size());i++) {		
-			int index_query = matches[i].queryIdx;
-			int index_match = matches[i].trainIdx;
-			float z1,z2;		
-			if (index_ % 2) {			
-				z1 = img1_depth_.at<float>(keypoints1_.at(index_match).pt.y,keypoints1_.at(index_match).pt.x);
-				z2 = img2_depth_.at<float>(keypoints2_.at(index_query).pt.y,keypoints2_.at(index_query).pt.x);
-			} else {
-				z1 = img1_depth_.at<float>(keypoints1_.at(index_query).pt.y,keypoints1_.at(index_query).pt.x);
-				z2 = img2_depth_.at<float>(keypoints2_.at(index_match).pt.y,keypoints2_.at(index_match).pt.x);
-			}			
-			if(z1 > 0.5 && z1 < 6.0 && z2 > 0.5 && z2 < 6.0)	// Only use correspondences_ with reasonable depth
-				correspondences_.push_back(pcl::Correspondence(index_query,index_match,0));
-		}				
-	
 
 		if (index_ % 2) {
 			feature_cloud_ptr1_->clear();
@@ -313,13 +294,44 @@ public:
 			}
 			feature_cloud_ptr2_->width = (int) keypoints2_.size();
 		}
+
+		if (keypoints1_.size() < 1 || keypoints2_.size() < 1) {
+			std::cout << "keypoints = 0!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << index_ << std::endl;
+			index_++;
+			return;
+		}
+//		pcl::Correspondence correspondence;
+		correspondences_.clear();		
+//		std::cout << keypoints1_.size() << "#" << keypoints2_.size() << "#" << matches.size() << std::endl;
+		for (unsigned int i = 0;i < (keypoints1_.size() < keypoints2_.size() ? keypoints1_.size() : keypoints2_.size());i++) {		
+			int index_query = matches[i].queryIdx;
+			int index_match = matches[i].trainIdx;
+			
+			float z1,z2;		
+			if (index_ % 2) {
+//				if (!(index_query >=0 && index_query < keypoints2_.size() && index_match >=0 && index_match < keypoints1_.size()))
+//					continue;			
+				z1 = img1_depth_.at<float>(keypoints1_.at(index_match).pt.y,keypoints1_.at(index_match).pt.x);
+				z2 = img2_depth_.at<float>(keypoints2_.at(index_query).pt.y,keypoints2_.at(index_query).pt.x);
+			} else {
+//				if (!(index_query >=0 && index_query < keypoints1_.size() && index_match >=0 && index_match < keypoints2_.size()))
+//					continue;	
+				z1 = img1_depth_.at<float>(keypoints1_.at(index_query).pt.y,keypoints1_.at(index_query).pt.x);
+				z2 = img2_depth_.at<float>(keypoints2_.at(index_match).pt.y,keypoints2_.at(index_match).pt.x);
+			}			
+			if(z1 > 0.5 && z1 < 6.0 && z2 > 0.5 && z2 < 6.0)	// Only use correspondences_ with reasonable depth
+				correspondences_.push_back(pcl::Correspondence(index_query,index_match,0));
+		}				
+	
+
+		
 		
 		if (matches.size() == 0) {
 			std::cout << "Matches = 0!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
 			index_++;
 			return;
 		}
-
+//		std::cout << feature_cloud_ptr1_->size() << "#" <<  feature_cloud_ptr2_->size() << std::endl; 
 		// RANSAC Pose Estimation
 		pcl::registration::CorrespondenceRejectorSampleConsensus<pcl::PointXYZ> ransac;
 		if (index_ % 2) {
@@ -340,7 +352,7 @@ public:
 //		std::cout << R << std::endl;
 //		std::cout << T << std::endl;
 
-		if (correspondences_inlier_.size() > 200) {		
+		if (correspondences_inlier_.size() > kThreshold) {		
 		
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr msg(new pcl::PointCloud<pcl::PointXYZRGB>);
 			msg->header.frame_id = "/openni_camera";
@@ -369,16 +381,16 @@ public:
 			std::cout << R_ << std::endl;
 			Eigen::Vector4f origin;
 			origin << T_,1;
-			msg-> sensor_orientation_ = Eigen::Quaternionf(R_);
-			msg-> sensor_origin_ = origin;			
+		//	msg-> sensor_orientation_ = Eigen::Quaternionf(R_);
+		//	msg-> sensor_origin_ = origin;			
 			pub_.publish (msg);
 
 		}
 
 		
 //		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
-		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
-//		std::cout << tf << std::endl; 
+//		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
+		std::cout << tf << std::endl; 
 		std::cout << "#Matches" << matches.size() << "\t#correspondences = " << correspondences_.size() << "\t#inlier = " << correspondences_inlier_.size() << std::endl;
 
 			
@@ -389,16 +401,14 @@ public:
 //		cv::imshow("Depth", cv_depth_ptr->image);
 		cv::waitKey(3);
 #endif
-		if (correspondences_inlier_.size() > 200)		
+		if (correspondences_inlier_.size() > kThreshold)		
 			index_++;
 		
-
-
 
 //		ros::Duration(1.0).sleep();
 		ros::Time time_now = ros::Time::now();
 		ROS_INFO("%fs, %.2fHz",time_now.toSec() - begin.toSec(),1 / (time_now.toSec() - time_.toSec()));
-		ROS_INFO("SURF = %fs, 3D Cloud = %fs",end2.toSec() - end1.toSec(),end3.toSec() - end2.toSec());
+//		ROS_INFO("SURF = %fs, 3D Cloud = %fs",end2.toSec() - end1.toSec(),end3.toSec() - end2.toSec());
 		
 		time_ = time_now;
 	}
