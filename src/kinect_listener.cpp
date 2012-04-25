@@ -309,13 +309,10 @@ public:
 			
 			float z1,z2;		
 			if (index_ % 2) {
-//				if (!(index_query >=0 && index_query < keypoints2_.size() && index_match >=0 && index_match < keypoints1_.size()))
-//					continue;			
 				z1 = img1_depth_.at<float>(keypoints1_.at(index_match).pt.y,keypoints1_.at(index_match).pt.x);
 				z2 = img2_depth_.at<float>(keypoints2_.at(index_query).pt.y,keypoints2_.at(index_query).pt.x);
 			} else {
-//				if (!(index_query >=0 && index_query < keypoints1_.size() && index_match >=0 && index_match < keypoints2_.size()))
-//					continue;	
+
 				z1 = img1_depth_.at<float>(keypoints1_.at(index_query).pt.y,keypoints1_.at(index_query).pt.x);
 				z2 = img2_depth_.at<float>(keypoints2_.at(index_match).pt.y,keypoints2_.at(index_match).pt.x);
 			}			
@@ -362,9 +359,10 @@ public:
 			for (int r = 0;r < 480;r+=10)
 				for (int c = 0;c < 640;c+=10) {
 					float z = cv_depth_ptr->image.at<float>(r,c);
+					point.z = (z > 0.5 && z < 6.0) ? z : 0.0;					
 					point.x = (c - cx) * z / fx;
 					point.y = (r - cy) * z / fy;
-					point.z = (z > 0.5 && z < 6.0) ? z : 0.0;
+					
 					cv::Point xy;
 					cv::Vec3b bgr = cv_rgb_ptr->image.at<cv::Vec3b>(r,c);
 					uint8_t r = bgr[2];
