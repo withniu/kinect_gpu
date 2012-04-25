@@ -58,7 +58,7 @@ private:
 
 	pcl::PointCloud<pcl::PointXYZRGB> cloud1_,cloud2_;	// 3D RGB cloudpoints
 	pcl::PointCloud<pcl::PointXYZ>::Ptr feature_cloud_ptr1_,feature_cloud_ptr2_;
-	
+	pcl::Correspondences correspondences_,correspondences_inlier_;
 
 	cv::Mat img1_,img2_;
 	cv::Mat img1_depth_,img2_depth_;
@@ -116,6 +116,9 @@ public:
 			
 			feature_cloud_ptr1_->height = 1;
 			feature_cloud_ptr2_->height = 1;
+
+
+			correspondences_.reserve(1500);
 
 #if GPU
 			cv::Mat mask_host = cv::Mat::ones(480,640,CV_8UC1);
@@ -250,6 +253,8 @@ public:
 
 #endif
 		end2 = ros::Time::now();
+
+/*
 #if GPU
 //		cv::gpu::GpuMat depth_dev;
 //		depth_dev.upload(cv_depth_ptr->image);
@@ -283,17 +288,20 @@ public:
 					cloud2_.push_back(point);		
 		}
 #endif
+*/
 		end3 = ros::Time::now();
+		std::cout << "#Matches" << matches.size() << "\t#Keypoints = " << keypoints1_.size() << std::endl;
 		// 3D Features Extraction
-		pcl::Correspondences correspondences,correspondences_inlier;
-		pcl::Correspondence correspondence;		
+		
+		pcl::Correspondence correspondence;
+		correspondences_.clear();		
 		for (unsigned int i = 0;i < (keypoints1_.size() < keypoints2_.size() ? keypoints1_.size() : keypoints2_.size());i++) {		
 			correspondence.index_query = matches[i].queryIdx;
 			correspondence.index_match = matches[i].trainIdx;
 			float z1 = img1_depth_.at<float>(keypoints1_[correspondence.index_query].pt.y,keypoints1_[correspondence.index_query].pt.x);
 			float z2 = img2_depth_.at<float>(keypoints2_[correspondence.index_match].pt.y,keypoints2_[correspondence.index_match].pt.x);
-//			if(z1 > 0.5 && z1 < 6.0 && z2 > 0.5 && z2 < 6.0)	// Only use correspondences with reasonable depth
-//				correspondences.push_back(correspondence);
+			if(z1 > 0.5 && z1 < 6.0 && z2 > 0.5 && z2 < 6.0)	// Only use correspondences_ with reasonable depth
+				correspondences_.push_back(correspondence);
 		}		
 /*
 		if (index_ % 2) {
@@ -345,7 +353,7 @@ public:
 		ransac.setMaxIterations (5000);
 		ransac.setInlierThreshold (.1);
 
-		ransac.getRemainingCorrespondences (correspondences,correspondences_inlier);
+		ransac.getRemainingcorrespondences_ (correspondences_,correspondences_inlier_);
 		Eigen::Matrix4f tf = ransac.getBestTransformation ();
 
 
@@ -358,7 +366,7 @@ public:
 //		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
 		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
 		std::cout << tf << std::endl; 
-		std::cout << "#correspondences = " << correspondences.size() << "\t#inlier = " << correspondences_inlier.size() << std::endl;
+		std::cout << "#correspondences_ = " << correspondences_.size() << "\t#inlier = " << correspondences_inlier_.size() << std::endl;
 */
 		if (index_ % 2) 
 			pub_.publish (cloud1_);		
