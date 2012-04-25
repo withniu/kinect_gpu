@@ -30,7 +30,7 @@
 
 #define USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER 1
 #define DRAW 0
-#define GPU 1
+#define GPU 0
 
 
 #if USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER
@@ -59,6 +59,9 @@ private:
 	pcl::PointCloud<pcl::PointXYZRGB> cloud1_,cloud2_;	// 3D RGB cloudpoints
 	pcl::PointCloud<pcl::PointXYZ>::Ptr feature_cloud_ptr1_,feature_cloud_ptr2_;
 	pcl::Correspondences correspondences_,correspondences_inlier_;
+
+	Eigen::Vector3f T_;
+	Eigen::Matrix3f R_;
 
 	cv::Mat img1_,img2_;
 	cv::Mat img1_depth_,img2_depth_;
@@ -119,6 +122,10 @@ public:
 
 
 			correspondences_.reserve(1500);
+			R_ << 1, 0, 0,
+			      0, 1, 0,
+			      0, 0, 1;
+			T_ = Eigen::Vector3f(0,0,0);
 
 #if GPU
 			cv::Mat mask_host = cv::Mat::ones(480,640,CV_8UC1);
@@ -254,56 +261,28 @@ public:
 #endif
 		end2 = ros::Time::now();
 
-/*
-#if GPU
-//		cv::gpu::GpuMat depth_dev;
-//		depth_dev.upload(cv_depth_ptr->image);
 
-//#else
-
-		// Calculate 3D points
-		if (index_ % 2) 
-			cloud1_.clear();		
-		else
-			cloud2_.clear();
-
-		pcl::PointXYZRGB point;
-		for (int r = 0;r < 480;r++)
-			for (int c = 0;c < 640;c++) {
-				float z = cv_depth_ptr->image.at<float>(r,c);
-				point.x = (c - cx) * z / fx;
-				point.y = (r - cy) * z / fy;
-				point.z = z;
-				cv::Point xy;
-				cv::Vec3b bgr = cv_rgb_ptr->image.at<cv::Vec3b>(r,c);
-				uint8_t r = bgr[2];
-				uint8_t g = bgr[1];
-				uint8_t b = bgr[0];
-				uint32_t rgb = (static_cast<uint32_t>(r) << 16 |
-	      					static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(b));
-     				point.rgb = *reinterpret_cast<float*>(&rgb);
-				if (index_ % 2) 
-					cloud1_.push_back(point);		
-				else
-					cloud2_.push_back(point);		
-		}
-#endif
-*/
 		end3 = ros::Time::now();
-		std::cout << "#Matches" << matches.size() << "\t#Keypoints = " << keypoints1_.size() << std::endl;
 		// 3D Features Extraction
 		
-		pcl::Correspondence correspondence;
+//		pcl::Correspondence correspondence;
 		correspondences_.clear();		
 		for (unsigned int i = 0;i < (keypoints1_.size() < keypoints2_.size() ? keypoints1_.size() : keypoints2_.size());i++) {		
-			correspondence.index_query = matches[i].queryIdx;
-			correspondence.index_match = matches[i].trainIdx;
-			float z1 = img1_depth_.at<float>(keypoints1_[correspondence.index_query].pt.y,keypoints1_[correspondence.index_query].pt.x);
-			float z2 = img2_depth_.at<float>(keypoints2_[correspondence.index_match].pt.y,keypoints2_[correspondence.index_match].pt.x);
+			int index_query = matches[i].queryIdx;
+			int index_match = matches[i].trainIdx;
+			float z1,z2;		
+			if (index_ % 2) {			
+				z1 = img1_depth_.at<float>(keypoints1_.at(index_match).pt.y,keypoints1_.at(index_match).pt.x);
+				z2 = img2_depth_.at<float>(keypoints2_.at(index_query).pt.y,keypoints2_.at(index_query).pt.x);
+			} else {
+				z1 = img1_depth_.at<float>(keypoints1_.at(index_query).pt.y,keypoints1_.at(index_query).pt.x);
+				z2 = img2_depth_.at<float>(keypoints2_.at(index_match).pt.y,keypoints2_.at(index_match).pt.x);
+			}			
 			if(z1 > 0.5 && z1 < 6.0 && z2 > 0.5 && z2 < 6.0)	// Only use correspondences_ with reasonable depth
-				correspondences_.push_back(correspondence);
-		}		
-/*
+				correspondences_.push_back(pcl::Correspondence(index_query,index_match,0));
+		}				
+	
+
 		if (index_ % 2) {
 			feature_cloud_ptr1_->clear();
 			for (unsigned int i = 0;i < keypoints1_.size();i++) {
@@ -311,7 +290,7 @@ public:
 				unsigned int y1 = keypoints1_[i].pt.y;
 				pcl::PointXYZ point1;
 				float z1 = img1_depth_.at<float>(y1,x1);
-				z1 = (z1 > 0.5 && z1 < 6.0) ? z1 : 0.01;		
+				z1 = (z1 > 0.5 && z1 < 6.0) ? z1 : .01;
 				point1.x = (x1 - cx) * z1 / fx;
 				point1.y = (y1 - cy) * z1 / fy;
 				point1.z = z1;	
@@ -326,7 +305,7 @@ public:
 				unsigned int y2 = keypoints2_[i].pt.y;
 				pcl::PointXYZ point2;
 				float z2 = img2_depth_.at<float>(y2,x2);
-				z2 = (z2 > 0.5 && z2 < 6.0) ? z2 : 0.01;				
+				z2 = (z2 > 0.5 && z2 < 6.0) ? z2 : .01;
 				point2.x = (x2 - cx) * z2 / fx;
 				point2.y = (y2 - cy) * z2 / fy;
 				point2.z = z2;
@@ -351,27 +330,87 @@ public:
 			ransac.setTargetCloud (feature_cloud_ptr2_);
 		}		
 		ransac.setMaxIterations (5000);
-		ransac.setInlierThreshold (.1);
+		ransac.setInlierThreshold (.05);
 
-		ransac.getRemainingcorrespondences_ (correspondences_,correspondences_inlier_);
+		ransac.getRemainingCorrespondences(correspondences_,correspondences_inlier_);
 		Eigen::Matrix4f tf = ransac.getBestTransformation ();
+		Eigen::Matrix3f R = tf.topLeftCorner(3,3);
+		Eigen::Vector3f T = tf.topRightCorner(3,1);
 
+//		std::cout << R << std::endl;
+//		std::cout << T << std::endl;
 
-
-
-
-
-
+		if (correspondences_inlier_.size() > 100) {		
 		
-//		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
-		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
-		std::cout << tf << std::endl; 
-		std::cout << "#correspondences_ = " << correspondences_.size() << "\t#inlier = " << correspondences_inlier_.size() << std::endl;
-*/
+#if GPU
+	//		cv::gpu::GpuMat depth_dev;
+	//		depth_dev.upload(cv_depth_ptr->image);
+
+//#else
+
+			// Calculate 3D points
+			if (index_ % 2) 
+				cloud1_.clear();		
+			else
+				cloud2_.clear();
+
+			pcl::PointXYZRGB point;
+			for (int r = 0;r < 480;r++)
+				for (int c = 0;c < 640;c++) {
+					float z = cv_depth_ptr->image.at<float>(r,c);
+					point.x = (c - cx) * z / fx;
+					point.y = (r - cy) * z / fy;
+					point.z = z;
+					cv::Point xy;
+					cv::Vec3b bgr = cv_rgb_ptr->image.at<cv::Vec3b>(r,c);
+					uint8_t r = bgr[2];
+					uint8_t g = bgr[1];
+					uint8_t b = bgr[0];
+					uint32_t rgb = (static_cast<uint32_t>(r) << 16 |
+		      					static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(b));
+	     				point.rgb = *reinterpret_cast<float*>(&rgb);
+					if (index_ % 2) 
+						cloud1_.push_back(point);		
+					else
+						cloud2_.push_back(point);		
+			}
+#endif
+		}
+
+
+
+
+		if (correspondences_inlier_.size() > 100) {
+			T_ = T_ - R_ * T;
+			R_ = R_ * R.inverse();
+			std::cout << T_ << std::endl;
+			std::cout << R_ << std::endl;
+			Eigen::Vector4f origin;
+			origin << T,1;
+			if (index_ % 2) {
+				cloud1_.sensor_orientation_ = Eigen::Quaternionf(R_);
+				cloud1_.sensor_origin_ = origin;
+	//			std::cout << cloud1_.sensor_orientation_ << std::endl;
+	//			std::cout << cloud1_.sensor_origin_ << std::endl;
+			} else {
+				cloud2_.sensor_orientation_ = Eigen::Quaternionf(R_);
+				cloud2_.sensor_origin_ = origin;
+	//			std::cout << cloud2_.sensor_orientation_ << std::endl;
+	//			std::cout << cloud2_.sensor_origin_ << std::endl;
+			}
+		
 		if (index_ % 2) 
 			pub_.publish (cloud1_);		
 		else
-			pub_.publish (cloud2_);			
+			pub_.publish (cloud2_);				
+		}
+		
+//		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
+		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
+//		std::cout << tf << std::endl; 
+		std::cout << "#Matches" << matches.size() << "\t#correspondences = " << correspondences_.size() << "\t#inlier = " << correspondences_inlier_.size() << std::endl;
+
+			
 
 #if DRAW
 //		cv::imshow("Matches", img_matches);
@@ -379,8 +418,12 @@ public:
 //		cv::imshow("Depth", cv_depth_ptr->image);
 		cv::waitKey(3);
 #endif
-		index_++;
+		if (correspondences_inlier_.size() > 100)		
+			index_++;
 		
+
+
+
 //		ros::Duration(1.0).sleep();
 		ros::Time time_now = ros::Time::now();
 		ROS_INFO("%fs, %.2fHz",time_now.toSec() - begin.toSec(),1 / (time_now.toSec() - time_.toSec()));
