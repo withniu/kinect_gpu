@@ -29,7 +29,7 @@
 #include <pcl/registration/correspondence_rejection_sample_consensus.h>
 
 #define USE_IMAGE_TRANSPORT_SUBSCRIBER_FILTER 1
-#define DRAW 1
+#define DRAW 0
 #define GPU 1
 
 
@@ -46,6 +46,7 @@ const float cx = 319.5;
 const float cy = 239.5;
 
 const int kThreshold = 100;
+const int kSample = 2;
 
 class KinectListener {
 // Members
@@ -106,6 +107,7 @@ public:
 #endif
 		sync( MySyncPolicy( 10 ), rgb_image_sub_, depth_image_sub_ )
 		{
+			ros::Time begin = ros::Time::now();
 			pub_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZRGB> > ("/keypoints3d", 1);
 			index_ = 0;
 			time_ = ros::Time::now();
@@ -142,7 +144,8 @@ public:
 			dst_device.download(result_host);
 			ROS_INFO("GPU initialization done...");
 #endif
-
+			ros::Time end = ros::Time::now();
+			ROS_INFO("Takes %fs.",end.toSec() - begin.toSec());
 #if DRAW
 			cv::namedWindow("RGB");			
 			cv::namedWindow("Depth");
@@ -179,11 +182,13 @@ public:
 		cv::Mat img_matches;
 		try
 		{
-			if (index_ % 2)
+			if (index_ % 2) {
 				img1_ = cv_rgb_ptr->image;
-			else
+				img1_depth_ = cv_depth_ptr->image;
+			} else {
 				img2_ = cv_rgb_ptr->image;
-		
+				img2_depth_ = cv_depth_ptr->image;
+			}
 			cv::gpu::GpuMat src_dev;
 			src_dev.upload(cv_rgb_ptr->image);
 			cv::gpu::cvtColor(src_dev,img_dev_,CV_BGR2GRAY);
@@ -300,7 +305,6 @@ public:
 			index_++;
 			return;
 		}
-//		pcl::Correspondence correspondence;
 		correspondences_.clear();		
 //		std::cout << keypoints1_.size() << "#" << keypoints2_.size() << "#" << matches.size() << std::endl;
 		for (unsigned int i = 0;i < (keypoints1_.size() < keypoints2_.size() ? keypoints1_.size() : keypoints2_.size());i++) {		
@@ -315,7 +319,7 @@ public:
 
 				z1 = img1_depth_.at<float>(keypoints1_.at(index_query).pt.y,keypoints1_.at(index_query).pt.x);
 				z2 = img2_depth_.at<float>(keypoints2_.at(index_match).pt.y,keypoints2_.at(index_match).pt.x);
-			}			
+			}
 			if(z1 > 0.5 && z1 < 6.0 && z2 > 0.5 && z2 < 6.0)	// Only use correspondences_ with reasonable depth
 				correspondences_.push_back(pcl::Correspondence(index_query,index_match,0));
 		}				
@@ -349,21 +353,29 @@ public:
 //		std::cout << R << std::endl;
 //		std::cout << T << std::endl;
 
-/*		if (correspondences_inlier_.size() > kThreshold) {		
-		
+		if (correspondences_inlier_.size() > kThreshold) {		
+			T_ = T_ - R_ * T;
+			R_ = R_ * R.inverse();
+			std::cout << T_ << std::endl;
+			std::cout << R_ << std::endl;
+
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr msg(new pcl::PointCloud<pcl::PointXYZRGB>);
 			msg->header.frame_id = "/openni_camera";
-			msg->height = 480 / 10;
-			msg->width = 640 / 10;
+			msg->height = 480 / kSample;
+			msg->width = 640 / kSample;
 			pcl::PointXYZRGB point;
-			for (int r = 0;r < 480;r+=10)
-				for (int c = 0;c < 640;c+=10) {
+			for (int r = 0;r < 480;r+=kSample)
+				for (int c = 0;c < 640;c+=kSample) {
 					float z = cv_depth_ptr->image.at<float>(r,c);
-					point.z = (z > 0.5 && z < 6.0) ? z : 0.0;					
-					point.x = (c - cx) * z / fx;
-					point.y = (r - cy) * z / fy;
+					z = (z > 0.5 && z < 6.0) ? z : 0.0;		
+					float x = (c - cx) * z / fx;
+					float y = (r - cy) * z / fy;
 					
-					cv::Point xy;
+					Eigen::Vector3f X = R_ * Eigen::Vector3f(x,y,z) + T_;
+					point.x = X(0);
+					point.y = X(1);
+					point.z = X(2);					
+					
 					cv::Vec3b bgr = cv_rgb_ptr->image.at<cv::Vec3b>(r,c);
 					uint8_t r = bgr[2];
 					uint8_t g = bgr[1];
@@ -373,10 +385,7 @@ public:
 	     				point.rgb = *reinterpret_cast<float*>(&rgb);
 					msg->points.push_back (point); 	
 			}
-			T_ = T_ - R_ * T;
-			R_ = R_ * R.inverse();
-			std::cout << T_ << std::endl;
-			std::cout << R_ << std::endl;
+
 			Eigen::Vector4f origin;
 			origin << T_,1;
 		//	msg-> sensor_orientation_ = Eigen::Quaternionf(R_);
@@ -384,7 +393,7 @@ public:
 			pub_.publish (msg);
 
 		}
-*/
+
 		
 //		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
 //		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
