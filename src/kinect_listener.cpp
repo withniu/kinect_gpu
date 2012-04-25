@@ -6,6 +6,8 @@
 #include <sensor_msgs/image_encodings.h>
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/subscriber_filter.h>
+#include <tf/transform_broadcaster.h>
+
 
 // OpenCV
 #include <opencv2/imgproc/imgproc.hpp>
@@ -25,23 +27,21 @@
 #include <pcl/point_types.h>
 #include <pcl/registration/correspondence_rejection_sample_consensus.h>
 
-#define DRAW 0
-#define GPU 1
+#define DRAW 0			// Show 2D features
+#define GPU 1			// Use opencv GPU library
 
 
-const float fx = 525.0;
+const float fx = 525.0;		// Focal length and offset
 const float fy = 525.0;
 const float cx = 319.5;
 const float cy = 239.5;
 
-const int kThreshold = 100;
-const int kSample = 5;
+const int kThreshold = 70;	// Threshold of #inliers
+const int kSample = 5;		// Subsample 3D cloudpoint for visualization
 
 class KinectListener {
 // Members
 private:
-
-
 	int index_;		// Count for callback to switch ping-pong
 	ros::Time time_;	// Timing for callback
 	ros::NodeHandle nh_;
@@ -60,16 +60,13 @@ private:
 	cv::Mat img1_features_,img2_features_;
 	cv::Mat descriptors1_, descriptors2_;
 	cv::vector<cv::KeyPoint> keypoints1_, keypoints2_;
-	
-	
+		
 #if GPU	
 	cv::gpu::GpuMat keypoints1_dev_, descriptors1_dev_;
 	cv::gpu::GpuMat keypoints2_dev_, descriptors2_dev_;
 	cv::gpu::GpuMat img_dev_, mask_dev_;
 	cv::gpu::SURF_GPU surf_;
 #endif
-
-
 
   	typedef image_transport::SubscriberFilter ImageSubscriber;
 	ImageSubscriber rgb_image_sub_;
@@ -80,16 +77,17 @@ private:
 // Methods
 public:
 	KinectListener() :	// Constructor
-			feature_cloud_ptr1_ (new pcl::PointCloud<pcl::PointXYZ>),
-			feature_cloud_ptr2_ (new pcl::PointCloud<pcl::PointXYZ>),		
-			it_(nh_),
-		    	rgb_image_sub_( it_, "/camera/rgb/image_color", 1 ),
-			depth_image_sub_( it_, "/camera/depth/image", 1 ),
-			sync( MySyncPolicy( 10 ), rgb_image_sub_, depth_image_sub_ )
+		feature_cloud_ptr1_ (new pcl::PointCloud<pcl::PointXYZ>),
+		feature_cloud_ptr2_ (new pcl::PointCloud<pcl::PointXYZ>),		
+		it_(nh_),
+	    	rgb_image_sub_( it_, "/camera/rgb/image_color", 1 ),
+		depth_image_sub_( it_, "/camera/depth/image", 1 ),
+		sync( MySyncPolicy( 10 ), rgb_image_sub_, depth_image_sub_ )
 	{
 		pub_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZRGB> > ("/keypoints3d", 1);
 		index_ = 0;
 		time_ = ros::Time::now();
+		sync.registerCallback( boost::bind( &KinectListener::callback, this, _1, _2 ) );
 
 		img1_ = cv::Mat::ones(480,640,CV_8UC3);
 		img1_depth_ = cv::Mat::ones(480,640,CV_32FC1);
@@ -123,19 +121,18 @@ public:
 		dst_device.download(result_host);
 		ROS_INFO("GPU initialization done...");
 #endif
-		ros::Time end = ros::Time::now();
-		ROS_INFO("Takes %fs.",end.toSec() - time_.toSec());
+
 #if DRAW
 		cv::namedWindow("RGB");			
 		cv::namedWindow("Depth");
 		cv::namedWindow("Feature");
 		cv::namedWindow("Matches");				
 #endif
-		sync.registerCallback( boost::bind( &KinectListener::callback, this, _1, _2 ) );
+		
 	}
 
 	void callback(const sensor_msgs::ImageConstPtr& rgb_msg, const sensor_msgs::ImageConstPtr& depth_msg) {
-		ros::Time begin,end,end1,end2,end3,end4;
+		ros::Time begin,end,end1,end2,end3,end4,end5,end6,end7;
 		begin = ros::Time::now();
 		// Convert image msg to cv::Mat
 		cv_bridge::CvImagePtr cv_rgb_ptr;	// cv_bridge for rgb image
@@ -309,6 +306,7 @@ public:
 			index_++;
 			return;
 		}
+		end5 = ros::Time::now();		
 		// RANSAC Pose Estimation
 		pcl::registration::CorrespondenceRejectorSampleConsensus<pcl::PointXYZ> ransac;
 		if (index_ % 2) {
@@ -325,6 +323,8 @@ public:
 		Eigen::Matrix4f tf = ransac.getBestTransformation ();
 		Eigen::Matrix3f R = tf.topLeftCorner(3,3);
 		Eigen::Vector3f T = tf.topRightCorner(3,1);
+		
+		end6 = ros::Time::now();
 
 		if (correspondences_inlier_.size() > kThreshold) {		
 			T_ = T_ - R_ * T;
@@ -362,11 +362,21 @@ public:
 			msg-> sensor_orientation_ = Eigen::Quaternionf(R_);
 			msg-> sensor_origin_ = origin;			
 			pub_.publish (msg);
+			
+			static tf::TransformBroadcaster br;
+			tf::Transform transform;
+			transform.setOrigin(tf::Vector3(T_(0),T_(1),T_(2)));
+			Eigen::Quaternionf q = Eigen::Quaternionf(R_);		
+			transform.setRotation(tf::Quaternion(q.x(),q.y(),q.z(),q.w()));
+			br.sendTransform(tf::StampedTransform(transform,ros::Time::now(),"openni_camera","camera_pose"));
 
 		}
-		
+		end7 = ros::Time::now();
 		if (correspondences_inlier_.size() > kThreshold)		
 			index_++;
+
+
+
 #if DRAW
 		cv::imshow("Matches", img_matches);
 //		cv::imshow("RGB", cv_rgb_ptr->image);
@@ -384,11 +394,16 @@ public:
 //		ros::Duration(1.0).sleep();
 		ros::Time time_now = ros::Time::now();
 		ROS_INFO("%fs, %.2fHz",time_now.toSec() - begin.toSec(),1 / (time_now.toSec() - time_.toSec()));
-		ROS_INFO("SURF_GPU = %fs(upload%.2f%%,processing%.2f%%,download%.2f%%)", 
-			 end4.toSec() - end1.toSec(),
+		ROS_INFO("SURF_GPU = %fs@%.2f%%(upload=%.2f%%,processing=%.2f%%,download=%.2f%%)", 
+			 end4.toSec() - end1.toSec(), 100 * (end4.toSec() - end1.toSec()) / (time_now.toSec() - begin.toSec()),
 			 100 * (end2.toSec() - end1.toSec()) / (end4.toSec() - end1.toSec()),
 			 100 * (end3.toSec() - end2.toSec()) / (end4.toSec() - end1.toSec()),
 			 100 * (end4.toSec() - end3.toSec()) / (end4.toSec() - end1.toSec()));
+		ROS_INFO("3D Feature = %fs@%.2f%% RANSCE = %fs@%.2f%% Cloudpoint = %fs@%.2f%% ", 
+			 end5.toSec() - end4.toSec(), 100 * (end5.toSec() - end4.toSec()) / (time_now.toSec() - begin.toSec()),
+			 end6.toSec() - end5.toSec(), 100 * (end6.toSec() - end5.toSec()) / (time_now.toSec() - begin.toSec()),
+			 end7.toSec() - end6.toSec(), 100 * (end7.toSec() - end6.toSec()) / (time_now.toSec() - begin.toSec()));
+		
 		time_ = time_now;
 	}
 };
