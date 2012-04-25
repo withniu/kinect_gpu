@@ -7,8 +7,15 @@ Kinect
 Software requirements
 Ubuntu
 ROS
+openni_camera
 OpenCV 2.3
 PCL 1.5
 
 Demo usage
-git clone 
+git clone git@github.com:withniu/kinect_gpu.git
+rosmake kinect_gpu --rosdep-install
+
+# Run openni node for Kinect
+rosrun kinect_gpu kinect_gpu_listener
+
+# Use rviz to subscrible /Keypoints3d (Cloudpoint2)
