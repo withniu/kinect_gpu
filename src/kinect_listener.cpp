@@ -104,7 +104,7 @@ public:
 #endif
 		sync( MySyncPolicy( 10 ), rgb_image_sub_, depth_image_sub_ )
 		{
-			pub_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZRGB> > ("keypoints3d", 1);
+			pub_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZRGB> > ("/keypoints3d", 1);
 			index_ = 0;
 			time_ = ros::Time::now();
 			img1_ = cv::Mat::ones(480,640,CV_8UC3);
@@ -340,27 +340,19 @@ public:
 //		std::cout << R << std::endl;
 //		std::cout << T << std::endl;
 
-		if (correspondences_inlier_.size() > 100) {		
+		if (correspondences_inlier_.size() > 200) {		
 		
-#if GPU
-	//		cv::gpu::GpuMat depth_dev;
-	//		depth_dev.upload(cv_depth_ptr->image);
-
-//#else
-
-			// Calculate 3D points
-			if (index_ % 2) 
-				cloud1_.clear();		
-			else
-				cloud2_.clear();
-
+			pcl::PointCloud<pcl::PointXYZRGB>::Ptr msg(new pcl::PointCloud<pcl::PointXYZRGB>);
+			msg->header.frame_id = "/openni_camera";
+			msg->height = 480 / 10;
+			msg->width = 640 / 10;
 			pcl::PointXYZRGB point;
-			for (int r = 0;r < 480;r++)
-				for (int c = 0;c < 640;c++) {
+			for (int r = 0;r < 480;r+=10)
+				for (int c = 0;c < 640;c+=10) {
 					float z = cv_depth_ptr->image.at<float>(r,c);
 					point.x = (c - cx) * z / fx;
 					point.y = (r - cy) * z / fy;
-					point.z = z;
+					point.z = (z > 0.5 && z < 6.0) ? z : 0.0;
 					cv::Point xy;
 					cv::Vec3b bgr = cv_rgb_ptr->image.at<cv::Vec3b>(r,c);
 					uint8_t r = bgr[2];
@@ -369,41 +361,20 @@ public:
 					uint32_t rgb = (static_cast<uint32_t>(r) << 16 |
 		      					static_cast<uint32_t>(g) << 8 | static_cast<uint32_t>(b));
 	     				point.rgb = *reinterpret_cast<float*>(&rgb);
-					if (index_ % 2) 
-						cloud1_.push_back(point);		
-					else
-						cloud2_.push_back(point);		
+					msg->points.push_back (point); 	
 			}
-#endif
-		}
-
-
-
-
-		if (correspondences_inlier_.size() > 100) {
 			T_ = T_ - R_ * T;
 			R_ = R_ * R.inverse();
 			std::cout << T_ << std::endl;
 			std::cout << R_ << std::endl;
 			Eigen::Vector4f origin;
-			origin << T,1;
-			if (index_ % 2) {
-				cloud1_.sensor_orientation_ = Eigen::Quaternionf(R_);
-				cloud1_.sensor_origin_ = origin;
-	//			std::cout << cloud1_.sensor_orientation_ << std::endl;
-	//			std::cout << cloud1_.sensor_origin_ << std::endl;
-			} else {
-				cloud2_.sensor_orientation_ = Eigen::Quaternionf(R_);
-				cloud2_.sensor_origin_ = origin;
-	//			std::cout << cloud2_.sensor_orientation_ << std::endl;
-	//			std::cout << cloud2_.sensor_origin_ << std::endl;
-			}
-		
-		if (index_ % 2) 
-			pub_.publish (cloud1_);		
-		else
-			pub_.publish (cloud2_);				
+			origin << T_,1;
+			msg-> sensor_orientation_ = Eigen::Quaternionf(R_);
+			msg-> sensor_origin_ = origin;			
+			pub_.publish (msg);
+
 		}
+
 		
 //		std::cout << "##size1 = " << feature_cloud_ptr1_->size() << "##size2 = " << feature_cloud_ptr2_->size() << std::endl;		
 		std::cout << "Threshold = " << ransac.getInlierThreshold () << "m\tMax Iteration = " << ransac.getMaxIterations () << std::endl;
@@ -418,7 +389,7 @@ public:
 //		cv::imshow("Depth", cv_depth_ptr->image);
 		cv::waitKey(3);
 #endif
-		if (correspondences_inlier_.size() > 100)		
+		if (correspondences_inlier_.size() > 200)		
 			index_++;
 		
 
