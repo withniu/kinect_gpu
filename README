@@ -1,0 +1,14 @@
+GPU Accelerated RGB-D SLAM with Kinect
+
+Hardware requirements
+CUDA GPU
+Kinect
+
+Software requirements
+Ubuntu
+ROS
+OpenCV 2.3
+PCL 1.5
+
+Demo usage
+git clone 
