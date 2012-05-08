@@ -36,7 +36,7 @@ const float fy = 525.0;
 const float cx = 319.5;
 const float cy = 239.5;
 
-const int kThreshold = 70;	// Threshold of #inliers
+const int kThreshold = 100;	// Threshold of #inliers
 const int kSample = 5;		// Subsample 3D cloudpoint for visualization
 
 class KinectListener {
@@ -162,6 +162,7 @@ public:
 				img2_ = cv_rgb_ptr->image;
 				img2_depth_ = cv_depth_ptr->image;
 			}
+			// Upload to GPU			
 			cv::gpu::GpuMat src_dev;
 			src_dev.upload(cv_rgb_ptr->image);
 			cv::gpu::cvtColor(src_dev,img_dev_,CV_BGR2GRAY);
@@ -181,7 +182,7 @@ public:
 			}
 							
 			end3 = ros::Time::now();			
-
+			// Download keypoints to host
 			if (index_ % 2) {
 				surf_.downloadKeypoints(keypoints1_dev_, keypoints1_);
 			} else {
@@ -246,7 +247,6 @@ public:
 		
 		
 		// 3D Features Extraction
-
 		if (index_ % 2) {
 			feature_cloud_ptr1_->clear();
 			for (unsigned int i = 0;i < keypoints1_.size();i++) {
